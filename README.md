@@ -15,6 +15,19 @@ Using standard Git client, clone the code from this repository to a local one.
 The rest of this document assumes that the repository is cloned into `<mpin-backend>`.
 Wherever `<mpin-backend>` appears, it should be replaced with the real location on your machine.
 
+### Part 0, Building the Milagro Crypto Libraries
+
+Clone the [_milagro-crypto_ repository](https://github.com/miracl/milagro-crypto) and checkout tag `1.0.0`.
+```
+> git clone https://github.com/miracl/milagro-crypto.git
+> cd milagro-crypto
+> git checkout tags/1.0.0
+```
+Follow the instructions for your platform from the milagro-crypto [README file](https://github.com/miracl/milagro-crypto/blob/master/README.md#build-instructions).
+
+### Part 1, Installion
+
+Note that the shell file bash install provides a short cut to install this package, so Part 1 can be skipped
 ### Installing Prerequisites
 
 **1** Update your package manager tool
@@ -27,18 +40,7 @@ Wherever `<mpin-backend>` appears, it should be replaced with the real location 
  > sudo pip install -r requirements/common.txt
 ```
 
-### Building the Milagro Crypto Libraries
-
-Clone the [_milagro-crypto_ repository](https://github.com/miracl/milagro-crypto) and checkout tag `1.0.0`.
-```
-> git clone https://github.com/miracl/milagro-crypto.git
-> cd milagro-crypto
-> git checkout tags/1.0.0
-``` 
-Follow the instructions for your platform from the milagro-crypto [README file](https://github.com/miracl/milagro-crypto/blob/master/README.md#build-instructions).
-
 ### Getting Credentials
-
 Before running any Milagro Services, you should obtain your *Credentials*.
 This is done with the following script:
 ```
@@ -49,7 +51,7 @@ This is done with the following script:
 **Important:** During the above process you will be asked to enter your e-mail address. While this is not mandatory, it is recommended so we can later contact you in case of any problems with the service.
 The above script will download a `credentials.json` file into the `<mpin-backend>` directory.
 
-### Configuring the Services
+### Part 2, Configuring the Services
 
 The Milagro MFA Services consist of: *Distributed Trusted Authority (D-TA)* and *Relying Party Service (RPS)*.
 The Web Application that integrates with the MFA in order to be able to log-in users using Milagro, is called *Relying Party Application (RPA)*.
@@ -57,6 +59,7 @@ The installation, and the source code itself include a *Demo RPA*, which should 
 The initial configuration allows the Demo RPA and the Milagro MFA Services to be access from any machine on the local network.
 Further details about configuration options might be found in the [Documentation](http://docs.miracl.com/m-pin-core-configuration).
 
+Note that there are default config files in each directory, so the following configuring steps can be skipped and move directly to part 3.
 #### Configuring the D-TA
 
 The source includes a "default" D-TA configuration file that should serve as a template for the actual one. To configure the D-TA perform the following steps:<br/>
@@ -126,12 +129,12 @@ mpinJSURL = "http://mpin.miracl.com/v4/mpin.js"
 ```
 **6** Save the file and exit the editor
 
-### Running and Testing the Services
+### Part 3, Running and Testing the Services
 
 For development purposes you might run the services from command line. Open 3 terminals and set the following two environment variables as shown below:
 ```
 export PYTHONPATH=<mpin-backend>/lib:/usr/local/lib/python2.7/site-packages
-export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:<path-to-milagro-crypto-library-Release-pythonCFFI directory>
 ```
 To run the services, perform the following commands, each in separate terminal:
 ```

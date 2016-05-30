@@ -137,15 +137,18 @@ def generate_auth_ott(rng):
     return generate_random_number(rng, crypto.PAS)
 
 
-def get_random_bytes(rng, byte_length = 4):
-    """Return random byte-array."""
+def generate_random_bytes(rng, byte_length = 4):
+    """Random Number Generator
+
+    Return a random number as byte-array
+    """
     if type(byte_length) is not int:
         return None
     if byte_length <= 0:
         return None
 
     r_hex = crypto.random_generate(rng, byte_length)
-    
+
     bytes = []
     for idx in range(len(r_hex) - 2, -1, -2):
         bytes.append(int(r_hex[idx:idx + 2], 16))
@@ -153,8 +156,11 @@ def get_random_bytes(rng, byte_length = 4):
     return bytes
 
 
-def get_random_integer(rng, max_digit = 4):
-    """Return random integer."""
+def generate_random_integer(rng, max_digit = 4):
+    """Random Number Generator
+
+    Return a random positive number as decimal integer
+    """
     if type(max_digit) is not int:
         return None
     if max_digit <= 0:

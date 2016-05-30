@@ -1948,7 +1948,7 @@ class EMpinActivationHandler(BaseHandler):
 
 
         ## GET ACTIVATION CODE
-        activation_code = secrets.get_random_integer(self.application.server_secret.rng, 12)
+        activation_code = secrets.generate_random_integer(self.application.server_secret.rng, 12)
 
 
         ## POINT CALC with ACTIVATION CODE (JS lib)

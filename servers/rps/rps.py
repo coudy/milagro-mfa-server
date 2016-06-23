@@ -56,6 +56,8 @@ from dynamic_options import (
     process_dynamic_options,
 )
 
+from authentication_protocols import AuthenticationProtocol, NotSupportedProtocolException
+
 if os.name == "posix":
     from mpDaemon import Daemon
 elif os.name == "nt":
@@ -94,6 +96,7 @@ define("syncTime", default=True, type=bool)
 define("credentialsFile", default=os.path.join(BASE_DIR, "credentials.json"), type=unicode)
 define("EntropySources", default="certivox:100", type=unicode)
 define("seedValueLength", default=100, type=int)
+define("supportedProtocols", default=["2pass"], type=list)
 
 # customer DTA service discovery options
 define("DTALocalURL", default="", type=unicode)
@@ -298,6 +301,7 @@ class ClientSettingsHandler(BaseHandler):
             "mobileAuthenticateURL": "{0}/authenticate".format(baseURL),
             "setDeviceName": options.setDeviceName,
             "accessNumberUseCheckSum": options.accessNumberUseCheckSum,
+            "supportedProtocols": options.supportedProtocols,
 
             "appID": Keys.app_id,
             "requestOTP": options.requestOTP,
@@ -949,17 +953,6 @@ class Pass1Handler(BaseHandler):
 
         try:
             receive_data = tornado.escape.json_decode(self.request.body)
-            mpin_id = receive_data['mpin_id'].decode("hex")
-            ut_hex = receive_data['UT']
-            u_hex = receive_data['U']
-        except KeyError as ex:
-            reason = "Invalid data received. %s argument missing" % ex.message
-            log.error("%s %s" % (request_info, reason))
-            self.set_status(403, reason=reason)
-            self.content_type = 'application/json'
-            self.write({'version': VERSION, 'message': reason})
-            self.finish()
-            return
         except (ValueError, TypeError) as ex:
             reason = "Invalid data received. %s" % ex.message
             log.error("%s %s" % (request_info, reason))
@@ -968,41 +961,25 @@ class Pass1Handler(BaseHandler):
             self.write({'version': VERSION, 'message': reason})
             self.finish()
             return
-        log.debug("%s %s" % (request_info, receive_data))
 
-        # Server generates Random number Y and sends it to Client
+        # Load the requested supported protocol, if not specific protocol is requested
+        # the default '2pass' is used
         try:
-            y_hex = self.application.server_secret.get_pass1_value()
-        except secrets.SecretsError as e:
-            log.error(e.message)
-            self.set_status(500, reason=e.message)
+            protocol_name = receive_data.get('protocol', '2pass')
+            protocol = AuthenticationProtocol().factory(protocol_name, self.storage, self.application)
+        except NotSupportedProtocolException as ex:
+            log.error("%s %s" % (request_info, ex.message))
+            self.set_status(500, reason=ex.message)
             self.content_type = 'application/json'
-            self.write({'version': VERSION, 'message': e.message})
+            self.write({'version': VERSION, 'message': ex.message})
             self.finish()
             return
 
-        # Store Pass1 values
-        self.storage.add(
-            expire_time=Time.syncedISO(seconds=PASS1_EXPIRES_TIME),
-            stage="pass1",
-            mpinId=mpin_id.encode('hex'),
-            ut=ut_hex,
-            u=u_hex,
-            y=y_hex,
-        )
+        error, return_data = protocol.pass1(receive_data, request_info, PASS1_EXPIRES_TIME)
+        return_data['version'] = VERSION
 
-        log.info("%s Stored Pass1 values" % request_info)
-
-        reason = "OK"
-        self.set_status(200, reason=reason)
         self.content_type = 'application/json'
-        return_data = {
-            'version': VERSION,
-            'y': y_hex,
-            'pass': 1,
-            'message': reason
-        }
-        log.debug("%s %s" % (request_info, return_data))
+        self.set_status(return_data.pop('status_code'), reason=return_data['message'])
         self.write(return_data)
         self.finish()
         return

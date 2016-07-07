@@ -142,6 +142,7 @@ DYNAMIC_OPTION_MAPPING = {
     'time_synchronization_period': 'timePeriod',
     'mobile_use_native': 'mobileUseNative',
     'mobile_client_config': 'mobileConfig',
+    'supported_protocols': 'supportedProtocols',
 }
 
 

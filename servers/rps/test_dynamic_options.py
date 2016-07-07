@@ -83,3 +83,19 @@ def test_mobile_change():
             }],
         },
         local_mapping=DYNAMIC_OPTION_MAPPING)
+
+
+def test_protocol_change():
+    _test_dynamic_options_update(
+        initial_options={
+            "supportedProtocols": ['2pass'],
+        },
+        response_body="""
+        {
+            "supported_protocols": ["2pass", "1pass"]
+        }
+        """,
+        expected_options={
+            "supportedProtocols": ['2pass', '1pass'],
+        },
+        local_mapping=DYNAMIC_OPTION_MAPPING)

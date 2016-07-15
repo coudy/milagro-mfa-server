@@ -1,0 +1,9 @@
+import os
+
+VERSION = '0.3'
+BASE_DIR = os.path.dirname(__file__)
+CONFIG_FILE = os.path.join(BASE_DIR, "config.py")
+MOBILE_LOGIN_AUTHENTICATION_TIMEOUT_SECONDS = 10
+
+PASS1_EXPIRES_TIME = 15
+PERMITS_MIN, PERMITS_MAX = 7, 13

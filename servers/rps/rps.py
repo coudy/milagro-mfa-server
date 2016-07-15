@@ -49,11 +49,19 @@ from mpin_utils.common import (
     signMessage,
     Time,
 )
+
 from mpin_utils import secrets
 from storage import get_storage_cls
 from dynamic_options import (
     generate_dynamic_options,
     process_dynamic_options,
+)
+
+
+from base_handlers import BaseHandler, PrivateBaseHandler
+from constants import (
+    VERSION, BASE_DIR, CONFIG_FILE, MOBILE_LOGIN_AUTHENTICATION_TIMEOUT_SECONDS,
+    PERMITS_MIN, PERMITS_MAX
 )
 
 from authentication_protocols import AuthenticationProtocol, NotSupportedProtocolException
@@ -64,15 +72,6 @@ elif os.name == "nt":
     from mpWinService import Service as Daemon
 else:
     raise Exception("Unsupported platform: {0}".format(os.name))
-
-
-VERSION = '0.3'
-BASE_DIR = os.path.dirname(__file__)
-CONFIG_FILE = os.path.join(BASE_DIR, "config.py")
-MOBILE_LOGIN_AUTHENTICATION_TIMEOUT_SECONDS = 10
-
-PASS1_EXPIRES_TIME = 15
-PERMITS_MIN, PERMITS_MAX = 7, 13
 
 
 # OPTIONS
@@ -231,55 +230,6 @@ def verifyToken(token):
         reason = "OK"
 
     return (fail, status, reason)
-
-
-# BASE HANDLERS
-class BaseHandler(tornado.web.RequestHandler):
-
-    def set_default_headers(self):
-        try:
-            log.debug("Origin Header %s" % self.request.headers['Origin'])
-            if self.request.headers['Origin'] in options.allowOrigin:
-                self.set_header("Access-Control-Allow-Origin", self.request.headers['Origin'])
-            elif "*" in options.allowOrigin:
-                self.set_header("Access-Control-Allow-Origin", "*")
-        except:
-            log.debug("Origin header not defined")
-        self.set_header("Access-Control-Allow-Credentials", "true")
-        self.set_header("Access-Control-Allow-Methods", "GET,PUT,POST,DELETE,OPTIONS")
-        self.set_header("Access-Control-Allow-Headers", "Content-Type, Depth, User-Agent, X-File-Size, X-Requested-With, X-Requested-By, If-Modified-Since, X-File-Name, Cache-Control, WWW-Authenticate")
-
-    def write_error(self, status_code, **kwargs):
-        self.set_status(status_code, reason=self._reason)
-        self.content_type = 'application/json'
-        self.write({'version': VERSION, 'message': self._reason})
-
-    def options(self, *args, **kwargs):
-        self.set_status(200, reason="OK")
-        self.content_type = 'application/json'
-        self.write({'version': VERSION, 'message': "options request"})
-        self.finish()
-        return
-
-    def finish(self, *args, **kwargs):
-        if self._status_code == 401:
-            self.set_header("WWW-Authenticate", "Authenticate")
-        super(BaseHandler, self).finish(*args, **kwargs)
-
-    @property
-    def storage(self):
-        return self.application.storage
-
-
-class PrivateBaseHandler(BaseHandler):
-
-    def prepare(self):
-        # TODO: Check the remoteIP option
-        # allow connections from whitelisted IP's
-        # print self.request.remote_ip
-        # self.set_status(404)
-        # self.finish()
-        pass
 
 
 # PUBLIC HANDLERS
@@ -880,320 +830,6 @@ class DefaultHandler(BaseHandler):
         return
 
 
-# AUTHENTICATION HANDLER
-class Pass1Handler(BaseHandler):
-    """
-    ..  apiTextStart
-
-    *Description*
-
-      Implements the first pass of the M-Pin Protocol
-
-    *URL structure*
-
-      ``/pass1``
-
-    *Version*
-
-      0.3
-
-    *HTTP Request Method*
-
-      POST
-
-    *Request Data*
-
-      JSON request::
-
-        {
-          "mpin_id":  "7b22...227d",
-          "U":    "0409...3d9c",
-          "UT":   "0402...d1d1",
-          "pass" : 1
-        }
-
-      mpin_id is the hex encoded M-Pin ID, U is x.hash(mpin_id) and UT is
-      x.(hash(mpin_id) + hash(data||hash(mpin_id)))
-
-    *Returns*
-
-      JSON response::
-
-        {
-          "y" : "212a...8d08",
-          "version" : "0.3",
-          "message" : "OK",
-          "pass" : 1
-        }
-
-      y  is a 256 bit random value.
-
-    *Status-Codes and Response-Phrases*
-
-      ::
-
-        Status-Code          Response-Phrase
-
-        200                  OK
-        403                  Invalid data received. <argument> argument missing
-        403                  Invalid data received. No JSON object could be decoded
-        403                  Invalid data received. Non-hexadecimal digit found
-        500                  Failed to generate y
-        500                  Failed to add pass one to memory
-
-    ..  apiTextEnd
-
-    """
-    def post(self):
-        # Remote request information
-        if 'User-Agent' in self.request.headers.keys():
-            UA = self.request.headers['User-Agent']
-        else:
-            UA = 'unknown'
-        request_info = '%s %s %s %s ' % (self.request.path, self.request.remote_ip, UA, Time.syncedISO())
-
-        try:
-            receive_data = tornado.escape.json_decode(self.request.body)
-        except (ValueError, TypeError) as ex:
-            reason = "Invalid data received. %s" % ex.message
-            log.error("%s %s" % (request_info, reason))
-            self.set_status(403, reason=reason)
-            self.content_type = 'application/json'
-            self.write({'version': VERSION, 'message': reason})
-            self.finish()
-            return
-
-        # Load the requested supported protocol, if not specific protocol is requested
-        # the default '2pass' is used
-        try:
-            protocol_name = receive_data.get('protocol', '2pass')
-            protocol = AuthenticationProtocol().factory(protocol_name, self.storage, self.application)
-        except NotSupportedProtocolException as ex:
-            log.error("%s %s" % (request_info, ex.message))
-            self.set_status(500, reason=ex.message)
-            self.content_type = 'application/json'
-            self.write({'version': VERSION, 'message': ex.message})
-            self.finish()
-            return
-
-        error, return_data = protocol.pass1(receive_data, request_info, PASS1_EXPIRES_TIME)
-        return_data['version'] = VERSION
-
-        self.content_type = 'application/json'
-        self.set_status(return_data.pop('status_code'), reason=return_data['message'])
-        self.write(return_data)
-        self.finish()
-        return
-
-
-class Pass2Handler(BaseHandler):
-    """
-    ..  apiTextStart
-
-    *Description*
-
-      Implements the second pass of the M-Pin Protocol. The result will be the authOTP.
-      At this point the authentication token has also been written to the RPS.
-      An authOTT will always be returned even if authentication fails.
-
-    *URL structure*
-
-      ``/pass2``
-
-    *Version*
-
-      0.3
-
-    *HTTP Request Method*
-
-      POST
-
-    *Request Data*
-
-      JSON request::
-
-        {
-          "WID" : "123456"
-          "V" : "0411...05f6a",
-          "pass" : 2,
-          "OTP" : <1||0>
-        }
-
-      WID is web identifier used for mobile authentication
-      When OTP is set to one this indicates that the radius OTP should be
-      generated.  V is a parameter used to perform the final step of the M-Pin
-      algorithm.
-
-    *Returns*
-
-      JSON response::
-
-        {
-          "OTP": "155317",
-          "authOTT": "31ba0ed5efb75d91ef69a2b7eb1d3a26",
-          "pass": 2,
-          "version": "0.3"
-        }
-
-      OTP is the radius one time password. authOTT is the password used to log into the
-      Customer's website.
-
-    *Status-Codes and Response-Phrases*
-
-      ::
-
-        Status-Code          Response-Phrase
-
-        200                  OK
-        403                  Invalid data received. <argument> argument missing
-        403                  Invalid data received. No JSON object could be decoded
-        403                  Invalid data received. Non-hexadecimal digit found
-        500                  Pass one data is not in memory
-
-    ..  apiTextEnd
-
-    """
-    @tornado.gen.coroutine
-    def post(self):
-        # Remote request information
-        if 'User-Agent' in self.request.headers.keys():
-            UA = self.request.headers['User-Agent']
-        else:
-            UA = 'unknown'
-        request_info = '%s %s %s %s ' % (self.request.path, self.request.remote_ip, UA, Time.syncedISO())
-
-        try:
-            receive_data = tornado.escape.json_decode(self.request.body)
-            mpin_id_hex = receive_data['mpin_id']
-            mpin_id = mpin_id_hex.decode('hex')
-            WID = receive_data['WID']
-            OTPEn = receive_data['OTP']
-            v_data = receive_data['V'].decode("hex")
-        except KeyError as ex:
-            reason = "Invalid data received. %s argument missing" % ex.message
-            log.error("%s %s" % (request_info, reason))
-            self.set_status(403, reason=reason)
-            self.content_type = 'application/json'
-            self.write({'version': VERSION, 'message': reason})
-            self.finish()
-            return
-        except (ValueError, TypeError) as ex:
-            reason = "Invalid data received. %s" % ex.message
-            log.error("%s %s" % (request_info, reason))
-            self.set_status(403, reason=reason)
-            self.content_type = 'application/json'
-            self.write({'version': VERSION, 'message': reason})
-            self.finish()
-            return
-        log.debug("%s %s" % (request_info, receive_data))
-
-        # Get pass one values
-        pass1Value = self.storage.find(stage="pass1", mpinId=mpin_id_hex)
-
-        if pass1Value:
-            u = pass1Value.u.decode("hex")
-            ut = pass1Value.ut.decode("hex")
-            y = pass1Value.y.decode("hex")
-        else:
-            reason = "Invalid pass one data"
-            log.error("%s %s" % (request_info, reason))
-            self.set_status(500, reason=reason)
-            self.content_type = 'application/json'
-            self.write({'version': VERSION, 'message': reason})
-            self.finish()
-            return
-        log.info("%s loaded Pass1 values" % request_info)
-
-        # Generate OTP value
-        if int(OTPEn) == 1:
-            OTP = "{0:06d}".format(
-                secrets.generate_otp(self.application.server_secret.rng))
-        else:
-            OTP = '0'
-
-        log.info("%s generate OTP" % request_info)
-
-        successCode = self.application.server_secret.validate_pass2_value(
-            mpin_id, u, ut, y, v_data)
-
-        pinError = 0
-        pinErrorCost = 0
-
-        # Authentication Token expiry
-        expires = Time.syncedISO(seconds=SIGNATURE_EXPIRES_OFFSET_SECONDS)
-
-        # Form Authentication token
-        token = {
-            "mpin_id": mpin_id,
-            "mpin_id_hex": mpin_id_hex,
-            "successCode": successCode,
-            "pinError": pinError,
-            "pinErrorCost": pinErrorCost,
-            "expires": expires,
-            "WID": WID,
-            "OTP": OTP
-        }
-        log.debug("%s M-Pin Auth token: %s" % (request_info, token))
-
-        # Form authentication 128 hex encoded One Time Password
-        authOTT = secrets.generate_auth_ott(self.application.server_secret.rng)
-
-        # Form message to return to client #
-        return_data = {
-            'version': VERSION,
-            'pass': 2,
-            'authOTT': authOTT
-        }
-
-        if int(OTPEn) == 1:
-            return_data['OTP'] = OTP
-
-        if WID != "0":
-            # Login with mobile
-            I = self.storage.find(stage="auth", wid=WID)
-
-            wid_flow = "wid"
-            flow = "mobile"
-
-            # if not I:
-            #     log.error("Invalid or expired access number: {0} for mpinid: {1}".format(WID, mpinId))
-            #     self.set_status(412, reason="INVALID OR EXPIRED ACCESS NUMBER")
-            #     self.finish()
-            #     return
-
-            if I:
-                I.update(authOTT=authOTT, mpinid=mpin_id, authToken=token)
-
-        else:
-            wid_flow = "browser"
-
-            if int(token.get("OTP", "0")) != 0:
-                flow = "OTP"
-            else:
-                flow = "Browser"
-
-            self.storage.add(
-                expire_time=Time.ISOtoDateTime(expires),
-                stage="auth",
-                authOTT=authOTT,
-                mpinId=mpin_id,
-                wid="",
-                webOTT=0,
-                authToken=token
-            )
-
-        log.debug("New M-Pin Authentication token / {0}. Flow: {1}".format(wid_flow, flow))
-
-        # Always send 200 to PIN Pad even if the user is not authenticated
-        reason = "OK"
-        log.debug("%s %s" % (request_info, return_data))
-        self.set_status(200, reason=reason)
-        self.content_type = 'application/json'
-        self.write(return_data)
-        self.finish()
-        return
-
-
 # PRIVATE HANDLERS
 class ManageGetStackInfoHandler(PrivateBaseHandler):
 
@@ -1485,9 +1121,6 @@ class Application(tornado.web.Application):
             (r"/{0}/getAccessNumber".format(rpsPrefix), RPSGetAccessNumberHandler),  # POST
             (r"/{0}/clientSettings".format(rpsPrefix), ClientSettingsHandler),
             (r"/{0}/authenticate".format(rpsPrefix), RPSAuthenticateHandler),  # POST, for mobile login
-            # Authentication
-            (r"/{0}/pass1".format(rpsPrefix), Pass1Handler),
-            (r"/{0}/pass2".format(rpsPrefix), Pass2Handler),
 
             (r"/authenticate", AuthenticateHandler),  # POST
 
@@ -1498,8 +1131,18 @@ class Application(tornado.web.Application):
             (r"/status", StatusHandler),
             (r"/dynamicOptions", DynamicOptionsHandler),  # POST, GET
             (r"/{0}/mobileConfig".format(rpsPrefix), MobileConfigHandler),  # GET
-            (r"/(.*)", DefaultHandler),
         ]
+
+        for protocol_name in options.supportedProtocols:
+            # Authenticate Handlers
+            try:
+                handlers = handlers + AuthenticationProtocol().handlers(protocol_name, rpsPrefix)
+            except NotSupportedProtocolException as ex:
+                log.error(ex.message)
+
+        # DefaultHandler
+        handlers.append((r"/(.*)", DefaultHandler))
+
         settings = {}
         super(Application, self).__init__(handlers, **settings)
 

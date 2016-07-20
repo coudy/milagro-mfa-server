@@ -15,6 +15,194 @@ class NotSupportedProtocolException(Exception):
 ###
 
 
+class TwoPassLogic():
+    """ Separate 2pass protocol logic so it can be more easy tested """
+
+    def __init__(self, application, storage):
+        self.storage = storage
+        self.application = application
+
+    def pass1_logic(self, receive_data, request_info, pass1_expires_time):
+
+        try:
+            mpin_id = receive_data['mpin_id'].decode("hex")
+            ut_hex = receive_data['UT']
+            u_hex = receive_data['U']
+        except KeyError as ex:
+            reason = "Invalid data received. %s argument missing" % ex.message
+            log.error("%s %s" % (request_info, reason))
+            return_data = {
+                'message': reason,
+                'status_code': 403
+            }
+
+            return True, return_data
+
+        log.debug("%s %s" % (request_info, receive_data))
+
+        # Server generates Random number Y and sends it to Client
+        try:
+            y_hex = self.application.server_secret.get_pass1_value()
+        except secrets.SecretsError as e:
+            return True, {'message': e.message, 'status_code': 500}
+
+        # Store Pass1 values
+        self.storage.add(
+            expire_time=Time.syncedISO(seconds=pass1_expires_time),
+            stage="pass1",
+            mpinId=mpin_id.encode('hex'),
+            ut=ut_hex,
+            u=u_hex,
+            y=y_hex,
+        )
+
+        log.info("%s Stored Pass1 values" % request_info)
+
+        reason = "OK"
+        return_data = {
+            'y': y_hex,
+            'pass': 1,
+            'message': reason,
+            'status_code': 200
+        }
+        log.debug("%s %s" % (request_info, return_data))
+
+        return False, return_data
+
+    def pass2_logic(self, receive_data, request_info):
+        # START
+        try:
+            mpin_id_hex = receive_data['mpin_id']
+            mpin_id = mpin_id_hex.decode('hex')
+            WID = receive_data['WID']
+            OTPEn = receive_data['OTP']
+            v_data = receive_data['V'].decode("hex")
+        except KeyError as ex:
+            reason = "Invalid data received. %s argument missing" % ex.message
+            log.error("%s %s" % (request_info, reason))
+            return_data = {
+                'message': reason,
+                'status_code': 403
+            }
+            return return_data
+
+        except (ValueError, TypeError) as ex:
+            reason = "Invalid data received. %s" % ex.message
+            log.error("%s %s" % (request_info, reason))
+            return_data = {
+                'message': reason,
+                'status_code': 403
+            }
+
+            return return_data
+
+        log.debug("%s %s" % (request_info, receive_data))
+
+        # Get pass one values
+        pass1Value = self.storage.find(stage="pass1", mpinId=mpin_id_hex)
+
+        if pass1Value:
+            u = pass1Value.u.decode("hex")
+            ut = pass1Value.ut.decode("hex")
+            y = pass1Value.y.decode("hex")
+        else:
+            reason = "Invalid pass one data"
+            log.error("%s %s" % (request_info, reason))
+
+            return_data = {
+                'message': reason,
+                'status_code': 500
+            }
+
+            return return_data
+
+        log.info("%s loaded Pass1 values" % request_info)
+
+        # Generate OTP value
+        if int(OTPEn) == 1:
+            OTP = "{0:06d}".format(
+                secrets.generate_otp(self.application.server_secret.rng))
+        else:
+            OTP = '0'
+
+        log.info("%s generate OTP" % request_info)
+
+        successCode = self.application.server_secret.validate_pass2_value(
+            mpin_id, u, ut, y, v_data)
+
+        pinError = 0
+        pinErrorCost = 0
+
+        # Authentication Token expiry
+        expires = Time.syncedISO(seconds=SIGNATURE_EXPIRES_OFFSET_SECONDS)
+
+        # Form Authentication token
+        token = {
+            "mpin_id": mpin_id,
+            "mpin_id_hex": mpin_id_hex,
+            "successCode": successCode,
+            "pinError": pinError,
+            "pinErrorCost": pinErrorCost,
+            "expires": expires,
+            "WID": WID,
+            "OTP": OTP
+        }
+        log.debug("%s M-Pin Auth token: %s" % (request_info, token))
+
+        # Form authentication 128 hex encoded One Time Password
+        authOTT = secrets.generate_auth_ott(self.application.server_secret.rng)
+
+        # Form message to return to client #
+        return_data = {
+            'status_code': 200,
+            'message': 'OK',
+            'pass': 2,
+            'authOTT': authOTT
+        }
+
+        if int(OTPEn) == 1:
+            return_data['OTP'] = OTP
+
+        if WID != "0":
+            # Login with mobile
+            I = self.storage.find(stage="auth", wid=WID)
+
+            wid_flow = "wid"
+            flow = "mobile"
+
+            # if not I:
+            #     log.error("Invalid or expired access number: {0} for mpinid: {1}".format(WID, mpinId))
+            #     self.set_status(412, reason="INVALID OR EXPIRED ACCESS NUMBER")
+            #     self.finish()
+            #     return
+
+            if I:
+                I.update(authOTT=authOTT, mpinid=mpin_id, authToken=token)
+
+        else:
+            wid_flow = "browser"
+
+            if int(token.get("OTP", "0")) != 0:
+                flow = "OTP"
+            else:
+                flow = "Browser"
+
+            self.storage.add(
+                expire_time=Time.ISOtoDateTime(expires),
+                stage="auth",
+                authOTT=authOTT,
+                mpinId=mpin_id,
+                wid="",
+                webOTT=0,
+                authToken=token
+            )
+
+        log.debug("New M-Pin Authentication token / {0}. Flow: {1}".format(wid_flow, flow))
+
+        return_data['message'] = 'OK'
+        return return_data
+
+
 # AUTHENTICATION HANDLER
 class Pass1Handler(BaseHandler):
     """
@@ -98,7 +286,8 @@ class Pass1Handler(BaseHandler):
             self.finish()
             return
 
-        error, return_data = self.pass1_logic(receive_data, request_info, PASS1_EXPIRES_TIME)
+        error, return_data = TwoPassLogic(self.application, self.storage).pass1_logic(
+            receive_data, request_info, PASS1_EXPIRES_TIME)
         return_data['version'] = VERSION
 
         self.content_type = 'application/json'
@@ -106,53 +295,6 @@ class Pass1Handler(BaseHandler):
         self.write(return_data)
         self.finish()
         return
-
-    def pass1_logic(self, receive_data, request_info, pass1_expires_time):
-
-        try:
-            mpin_id = receive_data['mpin_id'].decode("hex")
-            ut_hex = receive_data['UT']
-            u_hex = receive_data['U']
-        except KeyError as ex:
-            reason = "Invalid data received. %s argument missing" % ex.message
-            log.error("%s %s" % (request_info, reason))
-            return_data = {
-                'message': reason,
-                'status_code': 403
-            }
-
-            return True, return_data
-
-        log.debug("%s %s" % (request_info, receive_data))
-
-        # Server generates Random number Y and sends it to Client
-        try:
-            y_hex = self.application.server_secret.get_pass1_value()
-        except secrets.SecretsError as e:
-            return True, {'message': e.message, 'status_code': 500}
-
-        # Store Pass1 values
-        self.storage.add(
-            expire_time=Time.syncedISO(seconds=pass1_expires_time),
-            stage="pass1",
-            mpinId=mpin_id.encode('hex'),
-            ut=ut_hex,
-            u=u_hex,
-            y=y_hex,
-        )
-
-        log.info("%s Stored Pass1 values" % request_info)
-
-        reason = "OK"
-        return_data = {
-            'y': y_hex,
-            'pass': 1,
-            'message': reason,
-            'status_code': 200
-        }
-        log.debug("%s %s" % (request_info, return_data))
-
-        return False, return_data
 
 
 class Pass2Handler(BaseHandler):
@@ -231,22 +373,8 @@ class Pass2Handler(BaseHandler):
             UA = 'unknown'
         request_info = '%s %s %s %s ' % (self.request.path, self.request.remote_ip, UA, Time.syncedISO())
 
-        # START
         try:
             receive_data = tornado.escape.json_decode(self.request.body)
-            mpin_id_hex = receive_data['mpin_id']
-            mpin_id = mpin_id_hex.decode('hex')
-            WID = receive_data['WID']
-            OTPEn = receive_data['OTP']
-            v_data = receive_data['V'].decode("hex")
-        except KeyError as ex:
-            reason = "Invalid data received. %s argument missing" % ex.message
-            log.error("%s %s" % (request_info, reason))
-            self.set_status(403, reason=reason)
-            self.content_type = 'application/json'
-            self.write({'version': VERSION, 'message': reason})
-            self.finish()
-            return
         except (ValueError, TypeError) as ex:
             reason = "Invalid data received. %s" % ex.message
             log.error("%s %s" % (request_info, reason))
@@ -255,109 +383,14 @@ class Pass2Handler(BaseHandler):
             self.write({'version': VERSION, 'message': reason})
             self.finish()
             return
-        log.debug("%s %s" % (request_info, receive_data))
 
-        # Get pass one values
-        pass1Value = self.storage.find(stage="pass1", mpinId=mpin_id_hex)
+        return_data = TwoPassLogic(self.application, self.storage).pass2_logic(receive_data, request_info)
 
-        if pass1Value:
-            u = pass1Value.u.decode("hex")
-            ut = pass1Value.ut.decode("hex")
-            y = pass1Value.y.decode("hex")
-        else:
-            reason = "Invalid pass one data"
-            log.error("%s %s" % (request_info, reason))
-            self.set_status(500, reason=reason)
-            self.content_type = 'application/json'
-            self.write({'version': VERSION, 'message': reason})
-            self.finish()
-            return
-        log.info("%s loaded Pass1 values" % request_info)
-
-        # Generate OTP value
-        if int(OTPEn) == 1:
-            OTP = "{0:06d}".format(
-                secrets.generate_otp(self.application.server_secret.rng))
-        else:
-            OTP = '0'
-
-        log.info("%s generate OTP" % request_info)
-
-        successCode = self.application.server_secret.validate_pass2_value(
-            mpin_id, u, ut, y, v_data)
-
-        pinError = 0
-        pinErrorCost = 0
-
-        # Authentication Token expiry
-        expires = Time.syncedISO(seconds=SIGNATURE_EXPIRES_OFFSET_SECONDS)
-
-        # Form Authentication token
-        token = {
-            "mpin_id": mpin_id,
-            "mpin_id_hex": mpin_id_hex,
-            "successCode": successCode,
-            "pinError": pinError,
-            "pinErrorCost": pinErrorCost,
-            "expires": expires,
-            "WID": WID,
-            "OTP": OTP
-        }
-        log.debug("%s M-Pin Auth token: %s" % (request_info, token))
-
-        # Form authentication 128 hex encoded One Time Password
-        authOTT = secrets.generate_auth_ott(self.application.server_secret.rng)
-
-        # Form message to return to client #
-        return_data = {
-            'version': VERSION,
-            'pass': 2,
-            'authOTT': authOTT
-        }
-
-        if int(OTPEn) == 1:
-            return_data['OTP'] = OTP
-
-        if WID != "0":
-            # Login with mobile
-            I = self.storage.find(stage="auth", wid=WID)
-
-            wid_flow = "wid"
-            flow = "mobile"
-
-            # if not I:
-            #     log.error("Invalid or expired access number: {0} for mpinid: {1}".format(WID, mpinId))
-            #     self.set_status(412, reason="INVALID OR EXPIRED ACCESS NUMBER")
-            #     self.finish()
-            #     return
-
-            if I:
-                I.update(authOTT=authOTT, mpinid=mpin_id, authToken=token)
-
-        else:
-            wid_flow = "browser"
-
-            if int(token.get("OTP", "0")) != 0:
-                flow = "OTP"
-            else:
-                flow = "Browser"
-
-            self.storage.add(
-                expire_time=Time.ISOtoDateTime(expires),
-                stage="auth",
-                authOTT=authOTT,
-                mpinId=mpin_id,
-                wid="",
-                webOTT=0,
-                authToken=token
-            )
-
-        log.debug("New M-Pin Authentication token / {0}. Flow: {1}".format(wid_flow, flow))
+        return_data['version'] = VERSION
 
         # Always send 200 to PIN Pad even if the user is not authenticated
-        reason = "OK"
         log.debug("%s %s" % (request_info, return_data))
-        self.set_status(200, reason=reason)
+        self.set_status(return_data.pop('status_code'), reason=return_data['message'])
         self.content_type = 'application/json'
         self.write(return_data)
         self.finish()

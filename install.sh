@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -eo pipefail
 
 BASE_DIR=$(pwd)
 
@@ -32,18 +33,18 @@ function install_dependencies {
 function get_crypto {
     echo "Get Milagro Crypto Libraries"
     mkdir -p install
-    cd install || exit
+    cd install
     git clone https://github.com/miracl/milagro-crypto-c.git milagro-crypto \
         || echo "Crypto library clone failed, assuming it already exists"
 
-    cd milagro-crypto || exit
+    cd milagro-crypto
 }
 
 function build_crypto {
     echo "Build Milagro crypto library"
 
-    mkdir Release
-    cd Release || exit
+    mkdir -p Release
+    cd Release
     cmake ..
     make
     make test
@@ -51,7 +52,7 @@ function build_crypto {
 }
 
 function get_credentials {
-    cd "$BASE_DIR" || exit
+    cd "$BASE_DIR"
     python scripts/getCommunityCredentials.py .
 }
 
@@ -59,12 +60,12 @@ function build_frontend {
     echo "build frontend js"
 
     # Go to frontend code location
-    cd "$FRONTEND_LOCATION" || exit
+    cd "$FRONTEND_LOCATION"
     # run frontend build script
     ./build.sh
 
     # Create the needed directory and link the frontend
-    cd "$BASE_DIR/servers/demo/public/" || exit
+    cd "$BASE_DIR/servers/demo/public/"
 
     ln -sf "$FRONTEND_LOCATION/build/out/browser" mpin
 }
@@ -85,7 +86,7 @@ function get_dependencies {
 function configure_dta {
     echo "Configure DTA"
 
-    cd "$BASE_DIR/servers/dta" || exit
+    cd "$BASE_DIR/servers/dta"
 
     CONFIGURE=1
     if [ -f config.py ]
@@ -120,7 +121,7 @@ function configure_dta {
 function configure_rps {
     echo "Configure RPS"
 
-    cd "$BASE_DIR/servers/rps" || exit
+    cd "$BASE_DIR/servers/rps"
 
     CONFIGURE=1
     if [ -f config.py ]
@@ -148,7 +149,7 @@ function configure_rps {
 function configure_demo {
     echo "Configure Demo RPA"
 
-    cd "$BASE_DIR/servers/demo" || exit
+    cd "$BASE_DIR/servers/demo"
 
     CONFIGURE=1
     if [ -f config.py ]
